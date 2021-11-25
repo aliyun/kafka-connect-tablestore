@@ -21,6 +21,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * TableStore错误报告器：需要指定表名
@@ -42,6 +43,8 @@ public class TableStoreReporter extends GenericErrorReporter {
     private boolean autoCreate;
     private DefaultTableStoreWriter writer;
 
+    private long clientTimeOutMs = 10 * 60 * 1000L;
+    private long clientCreateLastTime;
 
     public TableStoreReporter(TableStoreSinkConfig config) {
         super();
@@ -66,8 +69,8 @@ public class TableStoreReporter extends GenericErrorReporter {
 
         autoCreate = config.getBoolean(TableStoreSinkConfig.AUTO_CREATE);
 
+        clientCreateLastTime = System.currentTimeMillis();
         validateOrCreateIfNecessary(tableName);
-
         initWriter();
     }
 
@@ -149,7 +152,6 @@ public class TableStoreReporter extends GenericErrorReporter {
             }
         };
 
-
         writer = new DefaultTableStoreWriter(
                 endpoint, credentials, instanceName, tableName, writerConfig, callback);
 
@@ -166,7 +168,16 @@ public class TableStoreReporter extends GenericErrorReporter {
 
         RowChange rowChange = convertToRowChange(errantRecord, errorInfo);
 
+        if (System.currentTimeMillis() - clientCreateLastTime > clientTimeOutMs) {
+            rebuildWriter();
+        }
+
         this.writer.addRowChange(rowChange);
+    }
+
+    private void rebuildWriter() {
+        // do nothing
+        clientCreateLastTime = System.currentTimeMillis();
     }
 
     /**

@@ -1,6 +1,7 @@
 package com.aliyun.tablestore.kafka.connect.parsers;
 
 import com.alicloud.openservices.tablestore.model.*;
+import com.aliyun.tablestore.kafka.connect.enums.PrimaryKeyMode;
 import org.apache.kafka.connect.data.Schema;
 
 import java.util.LinkedHashMap;
@@ -41,11 +42,20 @@ public interface EventParser {
      * @return Map<String, ColumnValue> 如果返回 null，则表示删行
      */
     LinkedHashMap<String, ColumnValue> parseForColumns(
+            Schema keySchema,
+            Object key,
+            Schema schema,
+            Object value,
+            PrimaryKey primaryKey,
+            List<DefinedColumnSchema> whitelistColumnSchemaList,
+            PrimaryKeyMode primaryKeyMode
+    ) throws EventParsingException;
+
+    LinkedHashMap<String, ColumnValue> parseForColumns(
             Schema schema,
             Object value,
             PrimaryKey primaryKey,
             List<DefinedColumnSchema> whitelistColumnSchemaList
     ) throws EventParsingException;
-
 
 }

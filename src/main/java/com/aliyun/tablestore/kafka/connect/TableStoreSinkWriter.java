@@ -52,6 +52,9 @@ public class TableStoreSinkWriter {
 
     private final AsyncClient ots;
 
+    private long clientTimeOutMs = 10 * 60 * 1000L;
+    private long clientCreateLastTime;
+
     public TableStoreSinkWriter(TableStoreSinkConfig config) {
         this.config = config;
 
@@ -84,7 +87,6 @@ public class TableStoreSinkWriter {
 
         transformFailedRecords = new AtomicLong();
         writeFailedRecords = new AtomicLong();
-
     }
 
     /**
@@ -128,25 +130,36 @@ public class TableStoreSinkWriter {
         return new AsyncClient(endpoint, credentials.getAccessKeyId(), credentials.getAccessKeySecret(), instanceName, cc, credentials.getSecurityToken());
     }
 
+    public void initWriter(String topic) {
+        Set<String> set = new HashSet<>();
+        set.add(topic);
+        initWriter(set);
+    }
     /**
      * 初始化TableStoreWriter,建立表名与TableStoreWriter的映射
      *
-     * @param topic
+     * @param topics
      */
-    public void initWriter(String topic) {
-        String tableName = config.getTableNameByTopic(topic);
-        if (writersByTable.containsKey(tableName)) {
+    public void initWriter(Set<String> topics) {
 
-            return;
+        clientCreateLastTime = System.currentTimeMillis();
+
+        for (String topic : topics) {
+
+            String tableName = config.getTableNameByTopic(topic);
+            if (writersByTable.containsKey(tableName)) {
+                continue;
+            }
+            LOGGER.info(String.format("Initializing writer for table: %s.", tableName));
+
+            validateOrCreateIfNecessary(tableName);
+
+            Executor executor = createThreadPool();
+
+            TableStoreWriter writer = new DefaultTableStoreWriter(ots, tableName, writerConfig, callback, executor);
+            executors.put(tableName, executor);
+            writersByTable.put(tableName, writer);
         }
-        LOGGER.info(String.format("Initializing writer for table: %s.", tableName));
-
-        validateOrCreateIfNecessary(tableName);
-
-        Executor executor = createThreadPool();
-        TableStoreWriter writer = new DefaultTableStoreWriter(ots, tableName, writerConfig, callback, executor);
-        executors.put(tableName, executor);
-        writersByTable.put(tableName, writer);
     }
 
     /**
@@ -264,26 +277,45 @@ public class TableStoreSinkWriter {
 
         DescribeTableRequest request = new DescribeTableRequest();
         request.setTableName(tableName);
-        Future<DescribeTableResponse> result = ots.describeTable(request, null);
         DescribeTableResponse res = null;
         TableMeta tableMeta = null;
-        try {
-            res = result.get();
-            tableMeta = res.getTableMeta();
-        } catch (TableStoreException e) {
-            if ("OTSObjectNotExist".equals(e.getErrorCode())) {
-                if (autoCreate) {
-                    tableMeta = tryCreateTable(tableName);
-                }else{
-                    throw new ConnectException(
-                            String.format("Table %s is missing and auto-creation is disabled", tableName)
-                    );
+
+        int maxRetry = 20;
+        while (maxRetry > 0) {
+            Future<DescribeTableResponse> result = ots.describeTable(request, null);
+            try {
+                res = result.get();
+                tableMeta = res.getTableMeta();
+                break;
+            } catch (TableStoreException e) {
+                if ("OTSObjectNotExist".equals(e.getErrorCode())) {
+                    if (autoCreate) {
+                        try {
+                            tableMeta = tryCreateTable(tableName);
+                        } catch (Exception exception) {
+                            LOGGER.error(String.format("Error while create table:%s, retry:%s", tableName,maxRetry), e);
+                        }
+                    } else {
+                        throw new ConnectException(
+                                String.format("Table %s is missing and auto-creation is disabled", tableName)
+                        );
+                    }
+                } else {
+                    LOGGER.error("An error occurred while validating the table", e);
                 }
-            } else {
-                LOGGER.error("An error occurred while validating the table", e);
+            } catch (InterruptedException | ExecutionException e) {
+                LOGGER.error("An error occurred while validating the table.", e);
             }
-        } catch (InterruptedException | ExecutionException e) {
-            LOGGER.error("An error occurred while validating the table.", e);
+
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+            }
+
+            maxRetry--;
+            if (maxRetry <= 0) {
+                throw new ConnectException(String.format("Error while describe table:%s", tableName));
+            }
         }
 
         List<PrimaryKeySchema> pkDefinedInConfig = config.getPrimaryKeySchemaListByTable(tableName);
@@ -317,6 +349,14 @@ public class TableStoreSinkWriter {
         return tableMeta;
     }
 
+
+    public Set<String> getAllTopics() {
+        if (config == null) {
+            return null;
+        }
+        return config.getAllTopics();
+    }
+
     public static long getTransformFailedRecords() {
         return transformFailedRecords.get();
     }
@@ -329,8 +369,16 @@ public class TableStoreSinkWriter {
      * 关闭 ots client
      */
     public void close() {
-        LOGGER.debug(String.format("Client is closed."));
+        LOGGER.debug("Client is closed.");
         ots.shutdown();
     }
 
+    public boolean needRebuild() {
+        return System.currentTimeMillis() - clientCreateLastTime > clientTimeOutMs;
+    }
+
+    public void rebuildClient() {
+        // do nothing
+        clientCreateLastTime = System.currentTimeMillis();
+    }
 }

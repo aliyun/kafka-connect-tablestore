@@ -2,6 +2,7 @@ package com.aliyun.tablestore.kafka.connect.utils;
 
 import com.alicloud.openservices.tablestore.model.*;
 import com.aliyun.tablestore.kafka.connect.TableStoreSinkConfig;
+import com.aliyun.tablestore.kafka.connect.TableStoreSinkConnector;
 import com.aliyun.tablestore.kafka.connect.enums.DeleteMode;
 import com.aliyun.tablestore.kafka.connect.enums.InsertMode;
 import com.aliyun.tablestore.kafka.connect.enums.PrimaryKeyMode;
@@ -9,6 +10,8 @@ import com.aliyun.tablestore.kafka.connect.parsers.EventParser;
 import com.aliyun.tablestore.kafka.connect.parsers.EventParsingException;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.sink.SinkRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -16,6 +19,9 @@ import java.util.List;
 import java.util.Map;
 
 public class RowChangeTransformer {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(RowChangeTransformer.class);
+
     private TableStoreSinkConfig config;
     private EventParser parser;
     private InsertMode insertMode;
@@ -39,14 +45,21 @@ public class RowChangeTransformer {
      * @param sinkRecord
      */
     public RowChange transform(String tableName, SinkRecord sinkRecord) throws EventParsingException, TransformException {
+
         RowChange rowChange = null;
+        try {
+            PrimaryKey primaryKey = buildPrimaryKey(tableName, sinkRecord);
 
-        PrimaryKey primaryKey = buildPrimaryKey(tableName, sinkRecord);
+            LinkedHashMap<String, ColumnValue> columnValueMap = buildColumns(tableName, sinkRecord, primaryKey);
 
-        LinkedHashMap<String, ColumnValue> columnValueMap = buildColumns(tableName, sinkRecord, primaryKey);
-
-        rowChange = buildRowChange(tableName, primaryKey, columnValueMap);
-
+            rowChange = buildRowChange(tableName, primaryKey, columnValueMap);
+        } catch (TransformException | EventParsingException e) {
+            LOGGER.error(String.format("error while transform, table: %s, sinkRecord: %s", tableName, sinkRecord), e);
+            throw e;
+        } catch (RuntimeException e) {
+            LOGGER.error(String.format("error while transform, catch rumtime exception, table: %s, sinkRecord: %s", tableName, sinkRecord), e);
+            throw new EventParsingException(e.getMessage());
+        }
         return rowChange;
     }
 
@@ -144,9 +157,11 @@ public class RowChangeTransformer {
 
         Schema schema = sinkRecord.valueSchema();
         Object value = sinkRecord.value();
+        Schema keySchema = sinkRecord.keySchema();
+        Object key = sinkRecord.key();
 
         LinkedHashMap<String, ColumnValue> columnValueMap = parser.parseForColumns(
-                schema, value, primaryKey, whitelistColumnSchemaList
+                keySchema, key, schema, value, primaryKey, whitelistColumnSchemaList, primaryKeyMode
         );
 
         if (columnValueMap == null) {

@@ -18,8 +18,8 @@ public class TableStoreSinkConfigTest {
 
         props.put(TableStoreSinkConfig.TOPIC_LIST, topics);
         props.put(TableStoreSinkConfig.OTS_ENDPOINT, AccessKey.endpoint);
-        props.put(TableStoreSinkConfig.OTS_ACCESS_KEY_ID, AccessKey.accessKeyId);
-        props.put(TableStoreSinkConfig.OTS_ACCESS_KEY_SECRET, AccessKey.accessKeySecret);
+//        props.put(TableStoreSinkConfig.OTS_ACCESS_KEY_ID, AccessKey.accessKeyId);
+//        props.put(TableStoreSinkConfig.OTS_ACCESS_KEY_SECRET, AccessKey.accessKeySecret);
         props.put(TableStoreSinkConfig.OTS_INSTANCE_NAME, AccessKey.instanceName);
     }
     @Test

@@ -395,7 +395,6 @@ public class TableStoreSinkConfig extends AbstractConfig {
                         5,
                         ConfigDef.Width.MEDIUM,
                         "Runtime error table");
-
     }
 
 
@@ -493,6 +492,13 @@ public class TableStoreSinkConfig extends AbstractConfig {
         }
         this.tableNameList.addAll(tableNameSet);
         return tableNameByTopic;
+    }
+
+    public Set<String> getAllTopics() {
+        if (this.tableNameByTopic == null || this.tableNameByTopic.size() == 0) {
+            return new HashSet<>();
+        }
+        return this.tableNameByTopic.keySet();
     }
 
     /**

@@ -7,15 +7,12 @@ import com.aliyun.tablestore.kafka.connect.errors.TableStoreReporter;
 import com.aliyun.tablestore.kafka.connect.model.ErrantSinkRecord;
 import com.aliyun.tablestore.kafka.connect.utils.Version;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.connect.sink.ErrantRecordReporter;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.kafka.connect.sink.SinkTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class TableStoreSinkTask extends SinkTask {
     private static final Logger LOGGER = LoggerFactory.getLogger(TableStoreSinkTask.class);
@@ -25,7 +22,6 @@ public class TableStoreSinkTask extends SinkTask {
     private ErrorReporter errorReporter;
 
     public TableStoreSinkTask() {
-
     }
 
     /**
@@ -64,13 +60,14 @@ public class TableStoreSinkTask extends SinkTask {
     public void open(Collection<TopicPartition> partitions) {
         LOGGER.info("Thread(" + Thread.currentThread().getId() + ") Enter OPEN");
         tableStoreSinkWriter = new TableStoreSinkWriter(config);
+
+        Set<String> topics = new HashSet<>();
         for (TopicPartition partition : partitions) {
             LOGGER.info("Thread(" + Thread.currentThread().getId() + ") OPEN (topic: " +
                     partition.topic() + ", partition: " + partition.partition() + ")");
-
-            tableStoreSinkWriter.initWriter(partition.topic());
+            topics.add(partition.topic());
         }
-
+        tableStoreSinkWriter.initWriter(topics);
     }
 
     /**
@@ -80,9 +77,14 @@ public class TableStoreSinkTask extends SinkTask {
      */
     @Override
     public void put(Collection<SinkRecord> records) {
-        if (records.isEmpty()) {
+        if (records == null || records.isEmpty()) {
             return;
         }
+        // 这里判断是否过期
+        if (tableStoreSinkWriter.needRebuild()) {
+            tableStoreSinkWriter.rebuildClient();
+        }
+
         final int recordsCount = records.size();
         LOGGER.debug("Received {} records. Writing them to the TableStore", recordsCount);
 
@@ -91,6 +93,8 @@ public class TableStoreSinkTask extends SinkTask {
             errorReporter.report(errantRecords);
         }
     }
+
+
 
     /**
      * 分区关闭

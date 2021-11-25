@@ -2,15 +2,13 @@ package com.aliyun.tablestore.kafka.connect.parsers;
 
 import com.alicloud.openservices.tablestore.core.utils.Bytes;
 import com.alicloud.openservices.tablestore.model.*;
+import com.aliyun.tablestore.kafka.connect.enums.PrimaryKeyMode;
 import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.data.Values;
 
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * DefaultEventParser 可以解析 Schema.Type 为 Struct, null, 和 Map的记录
@@ -36,8 +34,29 @@ public class DefaultEventParser implements EventParser {
             return parseMapForPrimaryKey(value, pkDefinedInConfig);
         } else if (Schema.Type.STRUCT.equals(schema.type())) {
             return parseStructForPrimaryKey(schema, value, pkDefinedInConfig);
+        } else if (Schema.Type.STRING.equals(schema.type())) {
+            return parseStringForPrimaryKey(schema, value, pkDefinedInConfig);
         }
         throw new EventParsingException(String.format("Schema of type %s cannot be supported", schema.type()));
+
+    }
+
+    private PrimaryKey parseStringForPrimaryKey(Schema schema, Object value, List<PrimaryKeySchema> pkDefinedInConfig) {
+        PrimaryKeyBuilder primaryKeyBuilder=PrimaryKeyBuilder.createPrimaryKeyBuilder();
+        String strValue = (String) value;
+        if (1 != pkDefinedInConfig.size()) {
+            throw new EventParsingException("number of pk must be 1 in string type");
+        }
+
+        for (int i = 0; i < pkDefinedInConfig.size(); i++) {
+            PrimaryKeySchema pkSchema = pkDefinedInConfig.get(i);
+            String pkName = pkSchema.getName();
+            PrimaryKeyType pkType = pkSchema.getType();
+
+            primaryKeyBuilder.addPrimaryKeyColumn(pkName, getPrimaryKeyValue(strValue, Schema.STRING_SCHEMA, pkType));
+        }
+        return primaryKeyBuilder.build();
+
 
     }
 
@@ -70,17 +89,16 @@ public class DefaultEventParser implements EventParser {
                 }
             }
 
-            //如果用户配置的不是bytes，报错
-            if (PrimaryKeyType.BINARY != pkSchema.getType()) {
-                throw new EventParsingException(
-                        "The type of primary key column " + pkName + " is " + pkSchema.getType() +
-                                " defined in config, but this is expected to be binary."
-                );
-            }
+//            //如果用户配置的不是bytes，报错
+//            if (PrimaryKeyType.BINARY != pkSchema.getType()) {
+//                throw new EventParsingException(
+//                        "The type of primary key column " + pkName + " is " + pkSchema.getType() +
+//                                " defined in config, but this is expected to be binary."
+//                );
+//            }
 
             Object originalValue = mapValue.get(pkName);
-            byte[] valueBytes = convertToBytes(originalValue);
-            primaryKeyBuilder.addPrimaryKeyColumn(pkName, PrimaryKeyValue.fromBinary(valueBytes));
+            primaryKeyBuilder.addPrimaryKeyColumn(pkName, getPrimaryKeyValue(originalValue.toString(), Schema.STRING_SCHEMA, pkSchema.getType()));
         }
         return primaryKeyBuilder.build();
     }
@@ -133,20 +151,72 @@ public class DefaultEventParser implements EventParser {
 
     @Override
     public LinkedHashMap<String, ColumnValue> parseForColumns(
+            Schema keySchema,
+            Object keyValue,
+            Schema schema,
+            Object value,
+            PrimaryKey primaryKey,
+            List<DefinedColumnSchema> whitelistColumnSchemaList,
+            PrimaryKeyMode primaryKeyMode
+
+    ) throws EventParsingException {
+
+        LinkedHashMap<String, ColumnValue> result = new LinkedHashMap<>();
+
+        if (value != null) {
+            // value 处理
+            if (schema == null || (schema != null && Schema.Type.MAP.equals(schema.type()))) {
+                result.putAll(parseMapForColumns(value, primaryKey, whitelistColumnSchemaList));
+            } else if (Schema.Type.STRUCT.equals(schema.type())) {
+                result.putAll(parseStructForColumns(schema, value, primaryKey, whitelistColumnSchemaList));
+            } else if (Schema.Type.STRING.equals(schema.type())) {
+                if (primaryKeyMode != PrimaryKeyMode.RECORD_VALUE) {
+                    result.putAll(parseStringForColumns(value, "value"));
+                }
+            }
+        }
+
+        if (keyValue != null) {
+            // key 处理
+            if (keySchema == null || (keySchema != null && Schema.Type.MAP.equals(keySchema.type()))) {
+                result.putAll(parseMapForColumns(keyValue, primaryKey, whitelistColumnSchemaList));
+            } else if (Schema.Type.STRUCT.equals(keySchema.type())) {
+                result.putAll(parseStructForColumns(keySchema, keyValue, primaryKey, whitelistColumnSchemaList));
+            } else if (Schema.Type.STRING.equals(keySchema.type())) {
+                if (primaryKeyMode != PrimaryKeyMode.RECORD_KEY) {
+                    result.putAll(parseStringForColumns(keyValue,"key"));
+                }
+            }
+        }
+
+        if (result.isEmpty()) {
+            throw new EventParsingException(String.format("Primary key %s parse fail", primaryKey.toString()));
+        }
+
+        return result;
+    }
+
+
+    @Override
+    public LinkedHashMap<String, ColumnValue> parseForColumns(
             Schema schema,
             Object value,
             PrimaryKey primaryKey,
             List<DefinedColumnSchema> whitelistColumnSchemaList
+
     ) throws EventParsingException {
-        if(value==null){
-            return null;
-        }
-        if (schema == null || (schema != null && Schema.Type.MAP.equals(schema.type()))) {
-            return parseMapForColumns(value, primaryKey, whitelistColumnSchemaList);
-        } else if (Schema.Type.STRUCT.equals(schema.type())) {
-            return parseStructForColumns(schema, value, primaryKey, whitelistColumnSchemaList);
-        }
-        throw new EventParsingException(String.format("Schema of type %s cannot be supported", schema.type()));
+        return parseForColumns(null, null, schema, value, primaryKey, whitelistColumnSchemaList, null);
+    }
+
+    /**
+     * 当使用stringconverter时，输入数据类型为string，组装column值
+     * @param value
+     * @return
+     */
+    private LinkedHashMap<String, ColumnValue> parseStringForColumns(Object value, String key) {
+        LinkedHashMap<String, ColumnValue> map = new LinkedHashMap<>();
+        map.put(key, ColumnValue.fromString(value.toString()));
+        return map;
     }
 
     /**
@@ -166,7 +236,7 @@ public class DefaultEventParser implements EventParser {
         if (whitelistColumnSchemaList.isEmpty()) {
             //没有过滤列，全写入情况
             for (Map.Entry<Object, Object> entry : mapValue.entrySet()) {
-                if (!"STRING".equals(entry.getKey().getClass().getSimpleName().toUpperCase())) {
+                if (!(entry.getKey() instanceof String)) {
                     throw new EventParsingException(String.format("Failed to parse value: %s", value.toString()));
                 }
                 String colName = (String) entry.getKey();
@@ -174,7 +244,7 @@ public class DefaultEventParser implements EventParser {
                     continue;
                 }
 
-                columnValueMap.put(colName, ColumnValue.fromBinary(convertToBytes(entry.getValue())));
+                columnValueMap.put(colName, ColumnValue.fromString(entry.getValue().toString()));
             }
         } else {
             //有过滤列
@@ -184,18 +254,21 @@ public class DefaultEventParser implements EventParser {
                     continue;
                 }
 
-                //如果用户配置的不是bytes，报错
-                if (DefinedColumnType.BINARY != whitelistColumnSchema.getType()) {
-                    throw new EventParsingException(
-                            "The type of attribute column " + colName + " is " + whitelistColumnSchema.getType() +
-                                    " defined in config, but this is expected to be binary."
-                    );
+//                //如果用户配置的不是bytes，报错
+//                if (DefinedColumnType.BINARY != whitelistColumnSchema.getType()) {
+//                    throw new EventParsingException(
+//                            "The type of attribute column " + colName + " is " + whitelistColumnSchema.getType() +
+//                                    " defined in config, but this is expected to be binary."
+//                    );
+//                }
+
+                if (primaryKey.contains(colName)) {
+                    continue;
                 }
 
                 Object originalValue = mapValue.get(colName);
-                byte[] valueBytes = convertToBytes(originalValue);
 
-                columnValueMap.put(colName, ColumnValue.fromBinary(valueBytes));
+                columnValueMap.put(colName, ColumnValue.fromString(originalValue.toString()));
             }
 
         }
@@ -233,6 +306,10 @@ public class DefaultEventParser implements EventParser {
                 if (field == null) {
                     continue;
                 }
+                if (primaryKey.contains(field.name())) {
+                    continue;
+                }
+
                 DefinedColumnType colType = convertToColumnType(field.schema().type());
 
                 //如果转换后的类型与用户配置不同，报错

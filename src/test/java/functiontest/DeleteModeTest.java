@@ -53,8 +53,8 @@ public class DeleteModeTest {
         props.put("task.max", "1");
         props.put(TableStoreSinkConfig.TOPIC_LIST, TOPIC);
         props.put(TableStoreSinkConfig.OTS_ENDPOINT, AccessKey.endpoint);
-        props.put(TableStoreSinkConfig.OTS_ACCESS_KEY_ID, AccessKey.accessKeyId);
-        props.put(TableStoreSinkConfig.OTS_ACCESS_KEY_SECRET, AccessKey.accessKeySecret);
+//        props.put(TableStoreSinkConfig.OTS_ACCESS_KEY_ID, AccessKey.accessKeyId);
+//        props.put(TableStoreSinkConfig.OTS_ACCESS_KEY_SECRET, AccessKey.accessKeySecret);
         props.put(TableStoreSinkConfig.OTS_INSTANCE_NAME, AccessKey.instanceName);
         props.put(TableStoreSinkConfig.AUTO_CREATE, "true");
 

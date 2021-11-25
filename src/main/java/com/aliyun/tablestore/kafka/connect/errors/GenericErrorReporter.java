@@ -1,7 +1,6 @@
 package com.aliyun.tablestore.kafka.connect.errors;
 
-import com.aliyun.tablestore.kafka.connect.TableStoreSinkConfig;
-import org.apache.kafka.common.InvalidRecordException;
+import org.apache.kafka.common.errors.InvalidTimestampException;
 import org.apache.kafka.connect.json.JsonConverter;
 import org.apache.kafka.connect.json.JsonConverterConfig;
 import org.apache.kafka.connect.storage.Converter;
@@ -81,7 +80,7 @@ public abstract class GenericErrorReporter implements ErrorReporter {
             if (timestamp == -1L) {
                 return null;
             } else {
-                throw new InvalidRecordException(String.format("Invalid record timestamp %d", timestamp));
+                throw new InvalidTimestampException(String.format("Invalid record timestamp %d", timestamp));
             }
         } else {
             return timestamp;

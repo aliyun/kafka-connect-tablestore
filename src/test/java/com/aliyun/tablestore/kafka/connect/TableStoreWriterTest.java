@@ -43,8 +43,8 @@ public class TableStoreWriterTest {
 
         props.put(TableStoreSinkConfig.TOPIC_LIST, TOPIC);
         props.put(TableStoreSinkConfig.OTS_ENDPOINT, AccessKey.endpoint);
-        props.put(TableStoreSinkConfig.OTS_ACCESS_KEY_ID, AccessKey.accessKeyId);
-        props.put(TableStoreSinkConfig.OTS_ACCESS_KEY_SECRET, AccessKey.accessKeySecret);
+//        props.put(TableStoreSinkConfig.OTS_ACCESS_KEY_ID, AccessKey.accessKeyId);
+//        props.put(TableStoreSinkConfig.OTS_ACCESS_KEY_SECRET, AccessKey.accessKeySecret);
         props.put(TableStoreSinkConfig.OTS_INSTANCE_NAME, AccessKey.instanceName);
         props.put(TableStoreSinkConfig.PRIMARY_KEY_MODE, "record_key");
         props.put(String.format(TableStoreSinkConfig.PRIMARY_KEY_NAME_TEMPLATE, TOPIC), "pk0");
