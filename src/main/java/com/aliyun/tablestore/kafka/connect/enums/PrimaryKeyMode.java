@@ -13,5 +13,8 @@ public enum PrimaryKeyMode {
     /**
      * 以 SinkRecord.value 中的字段作为 OTS 表的主键
      */
-    RECORD_VALUE;
+    RECORD_VALUE,
+
+
+    SEARCH;
 }

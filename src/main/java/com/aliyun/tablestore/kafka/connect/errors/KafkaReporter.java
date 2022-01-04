@@ -44,6 +44,8 @@ public class KafkaReporter extends GenericErrorReporter {
         //Kafka消息的序列化方式,默认ByteArray
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteArraySerializer");
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteArraySerializer");
+        // 请求消息最大大小
+        props.put(ProducerConfig.MAX_REQUEST_SIZE_CONFIG, 50 * 1024 * 1024);
         //请求的最长等待时间
         props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 5 * 1000);
 

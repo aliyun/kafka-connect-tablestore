@@ -1,22 +1,24 @@
 package com.aliyun.tablestore.kafka.connect;
 
 import com.alicloud.openservices.tablestore.*;
-import com.alicloud.openservices.tablestore.core.auth.DefaultCredentials;
-import com.alicloud.openservices.tablestore.core.auth.ServiceCredentials;
+import com.alicloud.openservices.tablestore.core.ResourceManager;
+import com.alicloud.openservices.tablestore.core.auth.CredentialsProvider;
+import com.alicloud.openservices.tablestore.core.auth.CredentialsProviderFactory;
 import com.alicloud.openservices.tablestore.model.*;
 import com.alicloud.openservices.tablestore.writer.WriterConfig;
 import com.alicloud.openservices.tablestore.writer.WriterResult;
 import com.alicloud.openservices.tablestore.writer.enums.BatchRequestType;
 import com.alicloud.openservices.tablestore.writer.enums.DispatchMode;
 import com.alicloud.openservices.tablestore.writer.enums.WriteMode;
-import com.alicloud.openservices.tablestore.writer.retry.CertainCodeNotRetryStrategy;
-import com.alicloud.openservices.tablestore.writer.retry.CertainCodeRetryStrategy;
+import com.aliyun.tablestore.kafka.connect.enums.AuthMode;
 import com.aliyun.tablestore.kafka.connect.enums.RuntimeErrorTolerance;
 import com.aliyun.tablestore.kafka.connect.model.ErrantSinkRecord;
-import com.aliyun.tablestore.kafka.connect.parsers.EventParsingException;
+import com.aliyun.tablestore.kafka.connect.model.StsUserBo;
+import com.aliyun.tablestore.kafka.connect.service.StsService;
+import com.aliyun.tablestore.kafka.connect.utils.ClientUtil;
 import com.aliyun.tablestore.kafka.connect.utils.ParamChecker;
 import com.aliyun.tablestore.kafka.connect.utils.RowChangeTransformer;
-import com.aliyun.tablestore.kafka.connect.utils.TransformException;
+import com.aliyun.tablestore.kafka.connect.writer.TableStoreSinkWriterInterface;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.slf4j.Logger;
@@ -24,10 +26,9 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-public class TableStoreSinkWriter {
+public class TableStoreSinkWriter implements TableStoreSinkWriterInterface {
     private static final Logger LOGGER = LoggerFactory.getLogger(TableStoreSinkWriter.class);
 
     private final TableStoreSinkConfig config;
@@ -41,19 +42,31 @@ public class TableStoreSinkWriter {
     private final String endpoint;
     private final String accessKeyId;
     private final String accessKeySecret;
-    private final ServiceCredentials credentials;
+
+
+    private CredentialsProvider credentialsProvider;
+
     private final String instanceName;
-    private final TableStoreCallback<RowChange, ConsumedCapacity> callback;
 
     private final boolean autoCreate;
     private final RuntimeErrorTolerance tolerance;
     private static AtomicLong transformFailedRecords;
     private static AtomicLong writeFailedRecords;
 
-    private final AsyncClient ots;
+    private AsyncClient ots;
 
-    private long clientTimeOutMs = 10 * 60 * 1000L;
+    private long clientTimeOutMs;
     private long clientCreateLastTime;
+
+    private String regionId;
+    private String accountId;
+    private String stsAccessId;
+    private String stsAccessKey;
+    private String roleName;
+    private String stsEndpoint;
+
+    private AuthMode authMode;
+
 
     public TableStoreSinkWriter(TableStoreSinkConfig config) {
         this.config = config;
@@ -65,28 +78,32 @@ public class TableStoreSinkWriter {
         executors = new LinkedHashMap<>();//建立表名和线程池映射关系
 
         endpoint = config.getString(TableStoreSinkConfig.OTS_ENDPOINT);
+        instanceName = config.getString(TableStoreSinkConfig.OTS_INSTANCE_NAME);
         accessKeyId = config.getString(TableStoreSinkConfig.OTS_ACCESS_KEY_ID);
         accessKeySecret = config.getPassword(TableStoreSinkConfig.OTS_ACCESS_KEY_SECRET).value();
-        credentials = new DefaultCredentials(accessKeyId, accessKeySecret);
-        instanceName = config.getString(TableStoreSinkConfig.OTS_INSTANCE_NAME);
-
-        ots = InitClient();
-
-        callback = new TableStoreCallback<RowChange, ConsumedCapacity>() {
-            @Override
-            public void onCompleted(RowChange rowChange, ConsumedCapacity consumedCapacity) {
-            }
-
-            @Override
-            public void onFailed(RowChange rowChange, Exception e) {
-            }
-        };
 
         autoCreate = config.getBoolean(TableStoreSinkConfig.AUTO_CREATE);
         tolerance = config.getParserErrorTolerance();
 
         transformFailedRecords = new AtomicLong();
         writeFailedRecords = new AtomicLong();
+
+
+        regionId = config.getString(TableStoreSinkConfig.REGION);
+        accountId = config.getString(TableStoreSinkConfig.ACCOUNT_ID);
+        Map<String, String> env = System.getenv();
+        stsAccessId = env.getOrDefault(TableStoreSinkConfig.STS_ACCESS_ID, "");
+        stsAccessKey = env.getOrDefault(TableStoreSinkConfig.STS_ACCESS_KEY, "");
+        roleName = config.getString(TableStoreSinkConfig.ROLE_NAME);
+        stsEndpoint = config.getString(TableStoreSinkConfig.STS_ENDPOINT);
+        clientTimeOutMs = config.getLong(TableStoreSinkConfig.CLIENT_TIME_OUT_MS);
+
+        authMode = AuthMode.getType(config.getString(TableStoreSinkConfig.TABLESTORE_AUTH_MODE));
+        if (authMode == null) {
+            LOGGER.error("auth mode is empty, please check");
+            throw new RuntimeException("auth mode is empty, please check");
+        }
+
     }
 
     /**
@@ -117,17 +134,17 @@ public class TableStoreSinkWriter {
      * 初始化 Client
      */
     private AsyncClient InitClient() {
-        ClientConfiguration cc = new ClientConfiguration();
-        cc.setMaxConnections(writerConfig.getClientMaxConnections());
-        switch (writerConfig.getWriterRetryStrategy()) {
-            case CERTAIN_ERROR_CODE_NOT_RETRY:
-                cc.setRetryStrategy(new CertainCodeNotRetryStrategy());
-                break;
-            case CERTAIN_ERROR_CODE_RETRY:
-            default:
-                cc.setRetryStrategy(new CertainCodeRetryStrategy());
+        ClientConfiguration cc = ClientUtil.getClientConfiguration(writerConfig);
+        if (authMode == AuthMode.STS) {
+            StsUserBo stsUserBo = StsService.getAssumeRole(accountId, regionId, stsEndpoint, stsAccessId, stsAccessKey, roleName);
+            clientCreateLastTime = System.currentTimeMillis();
+            credentialsProvider = CredentialsProviderFactory.newDefaultCredentialProvider(stsUserBo.getAk(), stsUserBo.getSk(), stsUserBo.getToken());
+
+            return new AsyncClient(endpoint, credentialsProvider, instanceName, cc, new ResourceManager(cc, null));
+        } else {
+
+            return new AsyncClient(endpoint, accessKeyId, accessKeySecret, instanceName, cc);
         }
-        return new AsyncClient(endpoint, credentials.getAccessKeyId(), credentials.getAccessKeySecret(), instanceName, cc, credentials.getSecurityToken());
     }
 
     public void initWriter(String topic) {
@@ -140,10 +157,10 @@ public class TableStoreSinkWriter {
      *
      * @param topics
      */
+    @Override
     public void initWriter(Set<String> topics) {
 
-        clientCreateLastTime = System.currentTimeMillis();
-
+        ots = InitClient();
         for (String topic : topics) {
 
             String tableName = config.getTableNameByTopic(topic);
@@ -154,12 +171,13 @@ public class TableStoreSinkWriter {
 
             validateOrCreateIfNecessary(tableName);
 
-            Executor executor = createThreadPool();
+            Executor executor = ClientUtil.createThreadPool(writerConfig);
 
-            TableStoreWriter writer = new DefaultTableStoreWriter(ots, tableName, writerConfig, callback, executor);
+            TableStoreWriter writer = new DefaultTableStoreWriter(ots, tableName, writerConfig, null, executor);
             executors.put(tableName, executor);
             writersByTable.put(tableName, writer);
         }
+
     }
 
     /**
@@ -174,6 +192,7 @@ public class TableStoreSinkWriter {
     /**
      * 关闭所有的TableStoreWriter和线程池
      */
+    @Override
     public void closeWriters() {
         LOGGER.info("Writers close");
         flushWriters();
@@ -190,6 +209,7 @@ public class TableStoreSinkWriter {
      *
      * @param records
      */
+    @Override
     public List<ErrantSinkRecord> write(Collection<SinkRecord> records) {
         List<ErrantSinkRecord> errantRecords = new LinkedList<>();//用来存放写入失败的sinkRecord
 
@@ -207,7 +227,7 @@ public class TableStoreSinkWriter {
                 Future<WriterResult> future = writer.addRowChangeWithFuture(rowChange);
                 futures.add(future);
                 usedRecords.add(record);
-            } catch (TransformException | EventParsingException e) {
+            } catch (Exception e) {
                 LOGGER.debug(String.format("Failed to transform sink record.Total transform failed: %d", transformFailedRecords.incrementAndGet()));
                 if (RuntimeErrorTolerance.NONE.equals(tolerance)) {
                     LOGGER.error("An error occurred while converting SinkRecord to RowChange.", e);
@@ -235,36 +255,18 @@ public class TableStoreSinkWriter {
                         errantRecords.add(new ErrantSinkRecord(usedRecords.get(i), rowChangeStatus.getException()));
                     }
                 }
-            } catch (InterruptedException |ExecutionException e) {
+            } catch (Exception e) {
                 LOGGER.error("An error occurred while writing.", e);
+                if (RuntimeErrorTolerance.NONE.equals(tolerance)) {
+                    String msg = String.format("An error occurred while writing to tablestore. record: %s", usedRecords.get(i));
+                    LOGGER.error(msg);
+                    throw new ConnectException(msg);
+                } else {
+                    errantRecords.add(new ErrantSinkRecord(usedRecords.get(i), e));
+                }
             }
         }
         return errantRecords;
-    }
-
-
-    /**
-     * 基于用户机器核数，内部构建合适的线程池（N为机器核数）
-     * core/max:    支持用户配置，默认：核数+1
-     * blockQueue:  支持用户配置，1024
-     * Reject:      CallerRunsPolicy
-     */
-    private ExecutorService createThreadPool() {
-        int coreThreadCount = writerConfig.getCallbackThreadCount();
-        int maxThreadCount = coreThreadCount;
-        int queueSize = writerConfig.getCallbackThreadPoolQueueSize();
-
-        ThreadFactory threadFactory = new ThreadFactory() {
-            private final AtomicInteger counter = new AtomicInteger(1);
-
-            @Override
-            public Thread newThread(Runnable r) {
-                return new Thread(r, "writer-callback-" + counter.getAndIncrement());
-            }
-        };
-
-        return new ThreadPoolExecutor(coreThreadCount, maxThreadCount, 0L, TimeUnit.MILLISECONDS,
-                new LinkedBlockingQueue(queueSize), threadFactory, new ThreadPoolExecutor.CallerRunsPolicy());
     }
 
 
@@ -368,17 +370,32 @@ public class TableStoreSinkWriter {
     /**
      * 关闭 ots client
      */
+    @Override
     public void close() {
         LOGGER.debug("Client is closed.");
         ots.shutdown();
     }
 
+    @Override
     public boolean needRebuild() {
         return System.currentTimeMillis() - clientCreateLastTime > clientTimeOutMs;
     }
 
+    @Override
     public void rebuildClient() {
-        // do nothing
-        clientCreateLastTime = System.currentTimeMillis();
+        if (authMode == AuthMode.AKSK) {
+            // 无需rebuilt
+            clientCreateLastTime = System.currentTimeMillis();
+            return;
+        } else if (authMode == AuthMode.STS) {
+            LOGGER.info("start rebuild Client.");
+            flushWriters();
+            ClientUtil.refreshCredential(accountId, regionId, stsEndpoint, stsAccessId, stsAccessKey, roleName, credentialsProvider);
+            clientCreateLastTime = System.currentTimeMillis();
+            LOGGER.info("finish rebuild Client.");
+            return;
+        }
+        return;
     }
+
 }
