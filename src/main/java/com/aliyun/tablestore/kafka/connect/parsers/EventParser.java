@@ -1,8 +1,10 @@
 package com.aliyun.tablestore.kafka.connect.parsers;
 
 import com.alicloud.openservices.tablestore.model.*;
+import com.aliyun.tablestore.kafka.connect.TableStoreSinkConfig;
 import com.aliyun.tablestore.kafka.connect.enums.PrimaryKeyMode;
 import org.apache.kafka.connect.data.Schema;
+import org.apache.kafka.connect.sink.SinkRecord;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -48,7 +50,10 @@ public interface EventParser {
             Object value,
             PrimaryKey primaryKey,
             List<DefinedColumnSchema> whitelistColumnSchemaList,
-            PrimaryKeyMode primaryKeyMode
+            PrimaryKeyMode primaryKeyMode,
+            SinkRecord sinkRecord,
+            TableStoreSinkConfig config,
+            String tableName
     ) throws EventParsingException;
 
     LinkedHashMap<String, ColumnValue> parseForColumns(

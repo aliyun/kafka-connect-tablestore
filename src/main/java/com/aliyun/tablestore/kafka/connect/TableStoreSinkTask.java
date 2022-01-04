@@ -1,11 +1,14 @@
 package com.aliyun.tablestore.kafka.connect;
 
 import com.aliyun.tablestore.kafka.connect.enums.RunTimeErrorMode;
+import com.aliyun.tablestore.kafka.connect.enums.TablestoreMode;
 import com.aliyun.tablestore.kafka.connect.errors.ErrorReporter;
 import com.aliyun.tablestore.kafka.connect.errors.KafkaReporter;
 import com.aliyun.tablestore.kafka.connect.errors.TableStoreReporter;
 import com.aliyun.tablestore.kafka.connect.model.ErrantSinkRecord;
 import com.aliyun.tablestore.kafka.connect.utils.Version;
+import com.aliyun.tablestore.kafka.connect.writer.TableStoreSinkWriterInterface;
+import com.aliyun.tablestore.kafka.connect.writer.TimeseriesSinkWriter;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.kafka.connect.sink.SinkTask;
@@ -14,11 +17,12 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 
+
 public class TableStoreSinkTask extends SinkTask {
     private static final Logger LOGGER = LoggerFactory.getLogger(TableStoreSinkTask.class);
 
     private TableStoreSinkConfig config;
-    private TableStoreSinkWriter tableStoreSinkWriter;
+    private TableStoreSinkWriterInterface tableStoreSinkWriter;
     private ErrorReporter errorReporter;
 
     public TableStoreSinkTask() {
@@ -45,7 +49,7 @@ public class TableStoreSinkTask extends SinkTask {
         config = new TableStoreSinkConfig(properties);
         if (RunTimeErrorMode.KAFKA.equals(config.getRunTimeErrorMode())) {
             errorReporter = new KafkaReporter(config);
-        } else if(RunTimeErrorMode.TABLESTORE.equals(config.getRunTimeErrorMode())){
+        } else if (RunTimeErrorMode.TABLESTORE.equals(config.getRunTimeErrorMode())){
             errorReporter = new TableStoreReporter(config);
         }
 
@@ -59,7 +63,7 @@ public class TableStoreSinkTask extends SinkTask {
     @Override
     public void open(Collection<TopicPartition> partitions) {
         LOGGER.info("Thread(" + Thread.currentThread().getId() + ") Enter OPEN");
-        tableStoreSinkWriter = new TableStoreSinkWriter(config);
+        tableStoreSinkWriter = getSinkWriterByConfigMode(config);
 
         Set<String> topics = new HashSet<>();
         for (TopicPartition partition : partitions) {
@@ -124,4 +128,20 @@ public class TableStoreSinkTask extends SinkTask {
             errorReporter.close();
         }
     }
+
+
+
+    private TableStoreSinkWriterInterface getSinkWriterByConfigMode(TableStoreSinkConfig config) {
+        TablestoreMode mode = config.getTablestoreMode();
+        switch(mode) {
+            case NORMAL:
+                return new TableStoreSinkWriter(config);
+            case TIMESERIES:
+                return new TimeseriesSinkWriter(config);
+            default:
+                LOGGER.error(String.format("Error while init sink writer, mode string: %s", mode));
+                return null;
+        }
+    }
+
 }

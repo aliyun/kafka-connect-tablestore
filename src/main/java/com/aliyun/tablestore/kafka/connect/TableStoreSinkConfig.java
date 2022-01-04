@@ -6,24 +6,46 @@ import com.aliyun.tablestore.kafka.connect.parsers.EventParser;
 import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class TableStoreSinkConfig extends AbstractConfig {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(TableStoreSinkConfig.class);
+
     private static final String DELIMITER = ",";
+
+
+    public static final String STS_ACCESS_ID = "ACCESS_ID";
+    public static final String STS_ACCESS_KEY = "ACCESS_KEY";
+
+    public static final String REGION = "region";
+    public static final String ACCOUNT_ID = "account.id";
+    public static final String ROLE_NAME = "role.name";
+    public static final String STS_ENDPOINT = "sts.endpoint";
+    public static final String CLIENT_TIME_OUT_MS = "client.time.out.ms";
     /**
      * 配置参数分组
      */
     private static final String KAFKA_GROUP = "Kafka";
+    private static final String TABLESTORE_GROUP = "Tablestore";
+    private static final String TIMESERIES_GROUP = "Timeseries";
     private static final String CONNECTION_GROUP = "Connection";
     private static final String DATA_MAPPING_GROUP = "Data Mapping";
     private static final String WRITE_GROUP = "Write";
     private static final String ERROR_GROUP = "Error";
+    private static final String STS_GROUP = "Sts";
+
+
 
     /**
      * Kafka 主题列表
      */
     public static final String TOPIC_LIST = "topics";
+
 
     /**
      * Kafka 消息解析器，默认为 DefaultEventParser
@@ -78,6 +100,15 @@ public class TableStoreSinkConfig extends AbstractConfig {
     public static final String PRIMARY_KEY_NAME_OFFSET = "offset";
     public static final String PRIMARY_KEY_TYPE_TOPIC_PARTITION = "string";
     public static final String PRIMARY_KEY_TYPE_OFFSET = "integer";
+
+
+    public static final String SEARCH_KEY_MD5 = "md5";
+    public static final String SEARCH_KEY_TOPIC = "topic";
+    public static final String SEARCH_KEY_PARTITION = "partition";
+    public static final String SEARCH_KEY_OFFSET = "offset";
+    public static final String SEARCH_FIELD_TIMESTAMP = "timestamp";
+
+    public static final String SEARCH_TIMESTAMP_MODE_TEMPLATE = "tablestore.%s.search.timestamp.type";
 
     /**
      * 定义 不同 OTS 表过滤属性列配置变量，如果缺省，将写入所有属性列
@@ -169,6 +200,32 @@ public class TableStoreSinkConfig extends AbstractConfig {
     public static final String RUNTIME_ERROR_TABLE_NAME = "runtime.error.table.name";
     public static final String RUNTIME_ERROR_TABLE_NAME_DEFAULT = "";
 
+
+    public static final int CLIENT_RETRY_TIME_SECONDS = 60;
+
+    /**
+     *
+     */
+    public static final String TABLESTORE_MODE = "tablestore.mode";
+    public static final String TABLESTORE_MODE_DEFAULT = "normal";
+    public static final String TABLESTORE_AUTH_MODE = "tablestore.auth.mode";
+    public static final String TABLESTORE_AUTH_MODE_DEFAULT = "STS";
+    public static final String TIMESERIES_MNAME = "tablestore.timeseries.%s.measurement";
+    public static final String TIMESERIES_DATASOURCE = "tablestore.timeseries.%s.dataSource";
+    public static final String TIMESERIES_TAGS = "tablestore.timeseries.%s.tags";
+    public static final String TIMESERIES_TIME = "tablestore.timeseries.%s.time";
+    public static final String TIMESERIES_TIME_UNIT = "tablestore.timeseries.%s.time.unit";
+    public static final String TIMESERIES_FIELDS_NAME = "tablestore.timeseries.%s.field.name";
+    public static final String TIMESERIES_FIELDS_TYPE = "tablestore.timeseries.%s.field.type";
+    public static final String TIMESERIES_MAPALL = "tablestore.timeseries.mapAll";
+    public static final String TIMESERIES_TO_LOWERCASE = "tablestore.timeseries.toLowerCase";
+
+    public static final String TIMESERIES_ROWSPERBATCH = "tablestore.timeseries.rowsPerBatch";
+    public static final int TIMESERIES_ROWSPERBATCH_DEFAULT = 200;
+
+    public static final String TIMESERIES_MNAME_TOPIC = "<topic>";
+
+
     /**
      * 配置定义
      */
@@ -186,6 +243,51 @@ public class TableStoreSinkConfig extends AbstractConfig {
                         ConfigDef.Width.LONG,
                         "Topic List"
                 )
+                .define(TABLESTORE_MODE,
+                        ConfigDef.Type.STRING,
+                        TABLESTORE_MODE_DEFAULT,
+                        ConfigDef.Importance.MEDIUM,
+                        "Tablestore connector working mode",
+                        TABLESTORE_GROUP,
+                        1,
+                        ConfigDef.Width.MEDIUM,
+                        "working mode")
+                .define(TABLESTORE_AUTH_MODE,
+                        ConfigDef.Type.STRING,
+                        TABLESTORE_AUTH_MODE_DEFAULT,
+                        ConfigDef.Importance.HIGH,
+                        "Tablestore auth mode",
+                        TABLESTORE_GROUP,
+                        2,
+                        ConfigDef.Width.MEDIUM,
+                        "auth mode")
+                .define(TIMESERIES_MAPALL,
+                        ConfigDef.Type.BOOLEAN,
+                        true,
+                        ConfigDef.Importance.MEDIUM,
+                        "auto mapping the key to ots fields",
+                        TIMESERIES_GROUP,
+                        1,
+                        ConfigDef.Width.MEDIUM,
+                        "mapAll")
+                .define(TIMESERIES_TO_LOWERCASE,
+                        ConfigDef.Type.BOOLEAN,
+                        true,
+                        ConfigDef.Importance.MEDIUM,
+                        "transfer the not-primary key to lower case when save to ots",
+                        TIMESERIES_GROUP,
+                        2,
+                        ConfigDef.Width.MEDIUM,
+                        "timeseries_tolowercase")
+                .define(TIMESERIES_ROWSPERBATCH,
+                        ConfigDef.Type.INT,
+                        TIMESERIES_ROWSPERBATCH_DEFAULT,
+                        ConfigDef.Importance.LOW,
+                        "rows sent per batch when write to ots",
+                        TIMESERIES_GROUP,
+                        3,
+                        ConfigDef.Width.MEDIUM,
+                        "timeseries_rowPerBatch")
                 .define(OTS_ENDPOINT,
                         ConfigDef.Type.STRING,
                         ConfigDef.NO_DEFAULT_VALUE,
@@ -197,7 +299,7 @@ public class TableStoreSinkConfig extends AbstractConfig {
                         "OTS Endpoint")
                 .define(OTS_ACCESS_KEY_ID,
                         ConfigDef.Type.STRING,
-                        ConfigDef.NO_DEFAULT_VALUE,
+                        "",
                         ConfigDef.Importance.HIGH,
                         "AccessKey ID for OTS.",
                         CONNECTION_GROUP,
@@ -206,7 +308,7 @@ public class TableStoreSinkConfig extends AbstractConfig {
                         "AccessKey ID")
                 .define(OTS_ACCESS_KEY_SECRET,
                         ConfigDef.Type.PASSWORD,
-                        ConfigDef.NO_DEFAULT_VALUE,
+                        "",
                         ConfigDef.Importance.HIGH,
                         "AccessKey Secret for OTS.",
                         CONNECTION_GROUP,
@@ -394,7 +496,52 @@ public class TableStoreSinkConfig extends AbstractConfig {
                         ERROR_GROUP,
                         5,
                         ConfigDef.Width.MEDIUM,
-                        "Runtime error table");
+                        "Runtime error table")
+                .define(REGION,
+                        ConfigDef.Type.STRING,
+                        "",
+                        ConfigDef.Importance.MEDIUM,
+                        "region.",
+                        STS_GROUP,
+                        1,
+                        ConfigDef.Width.MEDIUM,
+                        "Runtime error region")
+                .define(ACCOUNT_ID,
+                        ConfigDef.Type.STRING,
+                        "",
+                        ConfigDef.Importance.MEDIUM,
+                        "accountid.",
+                        STS_GROUP,
+                        2,
+                        ConfigDef.Width.MEDIUM,
+                        "Runtime error accountid")
+                .define(ROLE_NAME,
+                        ConfigDef.Type.STRING,
+                        "",
+                        ConfigDef.Importance.MEDIUM,
+                        "rolename.",
+                        STS_GROUP,
+                        3,
+                        ConfigDef.Width.MEDIUM,
+                        "Runtime error rolename")
+                .define(STS_ENDPOINT,
+                        ConfigDef.Type.STRING,
+                        "",
+                        ConfigDef.Importance.MEDIUM,
+                        "sts end point.",
+                        STS_GROUP,
+                        4,
+                        ConfigDef.Width.MEDIUM,
+                        "sts end point")
+                .define(CLIENT_TIME_OUT_MS,
+                        ConfigDef.Type.LONG,
+                        1000 * 60 * 60,
+                        ConfigDef.Importance.MEDIUM,
+                        "sts time out.",
+                        STS_GROUP,
+                        5,
+                        ConfigDef.Width.MEDIUM,
+                        "sts time out");
     }
 
 
@@ -402,12 +549,20 @@ public class TableStoreSinkConfig extends AbstractConfig {
     private final PrimaryKeyMode primaryKeyMode;
     private final InsertMode insertMode;
     private final DeleteMode deleteMode;
+    private final TablestoreMode tablestoreMode;
     private final RuntimeErrorTolerance parserErrorTolerance;
     private final RunTimeErrorMode runTimeErrorMode;
     private final List<String> tableNameList;
     private final Map<String, String> tableNameByTopic;
     private final Map<String, List<PrimaryKeySchema>> primaryKeySchemaByTable;
     private final Map<String, List<DefinedColumnSchema>> whitelistColumnSchemaByTable;
+    private final Map<String, Map<String, DefinedColumnSchema>> timeSeriesFieldName2ColumnSchemaByTable;
+
+    private final Map<String, Set<String>> timeseriesKeys = new ConcurrentHashMap<>();
+    private final Map<String, SearchTimeMode> searchTimeModeMap = new HashMap<>();
+
+    private final boolean timeseriesToLowerCase;
+    private final boolean timeseriesMapAll;
 
     public TableStoreSinkConfig(Map<String, String> originals) {
         this(CONFIG_DEF, originals);
@@ -419,6 +574,8 @@ public class TableStoreSinkConfig extends AbstractConfig {
         primaryKeyMode = PrimaryKeyMode.valueOf(getString(PRIMARY_KEY_MODE).toUpperCase());
         insertMode = InsertMode.valueOf(getString(INSERT_MODE).toUpperCase());
         deleteMode = DeleteMode.valueOf(getString(DELETE_MODE).toUpperCase());
+
+        tablestoreMode = TablestoreMode.getType(getString(TableStoreSinkConfig.TABLESTORE_MODE));
 
         if (!DeleteMode.NONE.equals(deleteMode) && primaryKeyMode != PrimaryKeyMode.RECORD_KEY) {
             throw new ConfigException(
@@ -450,6 +607,81 @@ public class TableStoreSinkConfig extends AbstractConfig {
 
         primaryKeySchemaByTable = createPrimaryKeySchemaList();
         whitelistColumnSchemaByTable = createColumnSchemaList();
+
+        timeSeriesFieldName2ColumnSchemaByTable = createTimeseriesColumnSchemaList();
+        timeseriesToLowerCase = getBoolean(TIMESERIES_TO_LOWERCASE);
+        timeseriesMapAll = getBoolean(TIMESERIES_MAPALL);
+
+        if (tablestoreMode == TablestoreMode.TIMESERIES && !timeseriesMapAll && (timeSeriesFieldName2ColumnSchemaByTable == null || timeSeriesFieldName2ColumnSchemaByTable.isEmpty())) {
+            throw new ConfigException("map all can not be false while timeSeriesColumnSchemaByTable is empty.");
+        }
+
+    }
+
+
+    private Map<String, Map<String, DefinedColumnSchema>> createTimeseriesColumnSchemaList() {
+        if (tablestoreMode != TablestoreMode.TIMESERIES) {
+            return new HashMap<>();
+        }
+
+        Map<String, Map<String, DefinedColumnSchema>> result = new HashMap<>();
+        for (String tableName : tableNameList) {
+            Map<String, DefinedColumnSchema> columnSchemas = new HashMap<>();
+            String colNameString = originalsStrings().getOrDefault(String.format(TIMESERIES_FIELDS_NAME, tableName), "");
+            String colTypeString = originalsStrings().getOrDefault(String.format(TIMESERIES_FIELDS_TYPE, tableName), "");
+
+            if (colNameString == null || colNameString.isEmpty()) {
+                continue;
+            }
+
+            String[] colNameList = colNameString.split(DELIMITER);
+            //1.检查属性列是否为空，是否重复
+            Set<String> set=new HashSet<>();
+            for(String colName:colNameList){
+                if(colName.length()==0){
+                    throw new ConfigException("The attribute column name in timeseries field cannot be an empty string.");
+                }
+                if(set.contains(colName)){
+                    throw new ConfigException("The attribute column name in timeseries field must be unique.");
+                }
+                set.add(colName);
+            }
+
+            String[] colTypeList = colTypeString.split(DELIMITER);
+
+            //1.没有配置属性列 name，type配置无效，视为没有配置白名单
+            if (colNameList.length == 0) {
+                result.put(tableName, columnSchemas);
+                continue;
+            }
+
+            //2.检查 name和 type 个数是否一致
+            if (colNameList.length != colTypeList.length) {
+                throw new ConfigException(String.format(TIMESERIES_FIELDS_NAME, tableName)
+                        + " : " + colTypeString
+                        + " does not match "
+                        + String.format(TIMESERIES_FIELDS_TYPE, tableName)
+                        + " : " + colNameString);
+            }
+
+
+            EnumValidator colTypeValidator = EnumValidator.in(DefinedColumnType.values());
+            for (int i = 0; i < colNameList.length; ++i) {
+                colTypeValidator.ensureValid(String.format(TIMESERIES_FIELDS_TYPE, tableName), colTypeList[i].trim());
+                columnSchemas.put(colNameList[i].trim().toLowerCase(),
+                        new DefinedColumnSchema(colNameList[i].trim(), DefinedColumnType.valueOf(colTypeList[i].trim().toUpperCase()))
+                );
+            }
+            result.put(tableName, columnSchemas);
+        }
+
+        if (!result.isEmpty()) {
+            LOGGER.info(String.format("timeseriesColumnSchema config: %s", result));
+        } else {
+            LOGGER.info("timeseriesColumnSchema config is empty");
+        }
+
+        return result;
     }
 
     /**
@@ -501,6 +733,15 @@ public class TableStoreSinkConfig extends AbstractConfig {
         return this.tableNameByTopic.keySet();
     }
 
+
+    public boolean toLowerCaseTimeseries() {
+        return timeseriesToLowerCase;
+    }
+
+    public boolean timeseriesMapAll() {
+        return timeseriesMapAll;
+    }
+
     /**
      * 建立 OTS 表名 和 PrimaryKeySchemaList 的映射关系
      */
@@ -511,6 +752,11 @@ public class TableStoreSinkConfig extends AbstractConfig {
             if (primaryKeyMode.equals(PrimaryKeyMode.KAFKA)) {
                 pkSchemaList.add(new PrimaryKeySchema(PRIMARY_KEY_NAME_TOPIC_PARTITION, PrimaryKeyType.valueOf(PRIMARY_KEY_TYPE_TOPIC_PARTITION.toUpperCase())));
                 pkSchemaList.add(new PrimaryKeySchema(PRIMARY_KEY_NAME_OFFSET, PrimaryKeyType.valueOf(PRIMARY_KEY_TYPE_OFFSET.toUpperCase())));
+            } else if (primaryKeyMode.equals(PrimaryKeyMode.SEARCH)) {
+                pkSchemaList.add(new PrimaryKeySchema(SEARCH_KEY_MD5, PrimaryKeyType.STRING));
+                pkSchemaList.add(new PrimaryKeySchema(SEARCH_KEY_TOPIC, PrimaryKeyType.STRING));
+                pkSchemaList.add(new PrimaryKeySchema(SEARCH_KEY_PARTITION, PrimaryKeyType.INTEGER));
+                pkSchemaList.add(new PrimaryKeySchema(SEARCH_KEY_OFFSET, PrimaryKeyType.INTEGER));
             } else {
                 String pkNameString = originalsStrings().getOrDefault(String.format(PRIMARY_KEY_NAME_TEMPLATE, tableName), DELIMITER);
                 String pkTypeString = originalsStrings().getOrDefault(String.format(PRIMARY_KEY_TYPE_TEMPLATE, tableName), DELIMITER);
@@ -659,6 +905,10 @@ public class TableStoreSinkConfig extends AbstractConfig {
         return deleteMode;
     }
 
+
+
+
+
     /**
      * 获取解析容错能力
      *
@@ -687,6 +937,29 @@ public class TableStoreSinkConfig extends AbstractConfig {
         }
         return this.tableNameByTopic.get(topic);
     }
+
+
+    public TablestoreMode getTablestoreMode() {
+        return tablestoreMode;
+    }
+
+
+    public SearchTimeMode getSearchTimeMode(String tableName) {
+        if (!searchTimeModeMap.containsKey(tableName)) {
+            String mNameField = originalsStrings().getOrDefault(String.format(SEARCH_TIMESTAMP_MODE_TEMPLATE, tableName), "");
+            SearchTimeMode timeMode = SearchTimeMode.getType(mNameField);
+            if (timeMode != null) {
+                searchTimeModeMap.put(tableName, timeMode);
+                LOGGER.info(String.format("search time mode, tableName:%s, mode:%s", tableName, timeMode));
+            } else {
+                searchTimeModeMap.put(tableName, SearchTimeMode.KAFKA);
+                LOGGER.info(String.format("search time mode, tableName:%s, mode:%s", tableName, SearchTimeMode.KAFKA));
+            }
+        }
+
+        return searchTimeModeMap.get(tableName);
+    }
+
 
     /**
      * 获取 OTS 表名列表
@@ -721,6 +994,29 @@ public class TableStoreSinkConfig extends AbstractConfig {
                     String.format("OTS table %s cannot be found", tableName));
         }
         return this.whitelistColumnSchemaByTable.get(tableName);
+    }
+
+    public Map<String, DefinedColumnSchema> getTimeseriesColumnSchemaMapByTable(String tableName) {
+        return this.timeSeriesFieldName2ColumnSchemaByTable.get(tableName);
+    }
+
+    public Set<String> getTimeseriesKeyStrings(String tableName) {
+        if (!timeseriesKeys.containsKey(tableName)) {
+            Set<String> keyStrings = new HashSet<>();
+            String mNameField = originalsStrings().getOrDefault(String.format(TableStoreSinkConfig.TIMESERIES_MNAME, tableName), "");
+            if (!mNameField.equalsIgnoreCase(TableStoreSinkConfig.TIMESERIES_MNAME_TOPIC)) {
+                keyStrings.add(originalsStrings().getOrDefault(String.format(TableStoreSinkConfig.TIMESERIES_MNAME, tableName), ""));
+            }
+            keyStrings.add(originalsStrings().getOrDefault(String.format(TableStoreSinkConfig.TIMESERIES_DATASOURCE, tableName), ""));
+            keyStrings.add(originalsStrings().getOrDefault(String.format(TableStoreSinkConfig.TIMESERIES_TIME, tableName), ""));
+
+            String tagValue = originalsStrings().getOrDefault(String.format(TableStoreSinkConfig.TIMESERIES_TAGS, tableName), "");
+            for (String str : tagValue.split(",")) {
+                keyStrings.add(str);
+            }
+            timeseriesKeys.put(tableName, keyStrings);
+        }
+        return timeseriesKeys.get(tableName);
     }
 
     /**

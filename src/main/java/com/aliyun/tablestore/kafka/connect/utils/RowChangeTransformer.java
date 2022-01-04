@@ -2,17 +2,19 @@ package com.aliyun.tablestore.kafka.connect.utils;
 
 import com.alicloud.openservices.tablestore.model.*;
 import com.aliyun.tablestore.kafka.connect.TableStoreSinkConfig;
-import com.aliyun.tablestore.kafka.connect.TableStoreSinkConnector;
 import com.aliyun.tablestore.kafka.connect.enums.DeleteMode;
 import com.aliyun.tablestore.kafka.connect.enums.InsertMode;
 import com.aliyun.tablestore.kafka.connect.enums.PrimaryKeyMode;
 import com.aliyun.tablestore.kafka.connect.parsers.EventParser;
 import com.aliyun.tablestore.kafka.connect.parsers.EventParsingException;
+import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -79,9 +81,26 @@ public class RowChangeTransformer {
                 return buildPrimaryKeyByRecordKey(tableName, sinkRecord);
             case RECORD_VALUE:
                 return buildPrimaryKeyByRecordValue(tableName, sinkRecord);
+            case SEARCH:
+                return buildPrimaryBySearch(sinkRecord);
             default:
                 throw new TransformException("Failed to build PrimaryKey");
         }
+    }
+
+
+    private PrimaryKey buildPrimaryBySearch(SinkRecord sinkRecord) {
+        PrimaryKeyBuilder primaryKeyBuilder = PrimaryKeyBuilder.createPrimaryKeyBuilder();
+
+        String source = String.format("%s_%s_%s", sinkRecord.topic(), sinkRecord.kafkaPartition(), sinkRecord.kafkaOffset());
+        String md5 = DigestUtils.md5Hex(source).substring(0,5);
+
+        primaryKeyBuilder.addPrimaryKeyColumn(TableStoreSinkConfig.SEARCH_KEY_MD5, PrimaryKeyValue.fromString(md5));
+        primaryKeyBuilder.addPrimaryKeyColumn(TableStoreSinkConfig.SEARCH_KEY_TOPIC, PrimaryKeyValue.fromString(sinkRecord.topic()));
+        primaryKeyBuilder.addPrimaryKeyColumn(TableStoreSinkConfig.SEARCH_KEY_PARTITION, PrimaryKeyValue.fromLong(sinkRecord.kafkaPartition()));
+        primaryKeyBuilder.addPrimaryKeyColumn(TableStoreSinkConfig.SEARCH_KEY_OFFSET, PrimaryKeyValue.fromLong(sinkRecord.kafkaOffset()));
+
+        return primaryKeyBuilder.build();
     }
 
     /**
@@ -161,7 +180,7 @@ public class RowChangeTransformer {
         Object key = sinkRecord.key();
 
         LinkedHashMap<String, ColumnValue> columnValueMap = parser.parseForColumns(
-                keySchema, key, schema, value, primaryKey, whitelistColumnSchemaList, primaryKeyMode
+                keySchema, key, schema, value, primaryKey, whitelistColumnSchemaList, primaryKeyMode, sinkRecord, config, tableName
         );
 
         if (columnValueMap == null) {

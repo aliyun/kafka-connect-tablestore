@@ -1,11 +1,8 @@
 package com.aliyun.tablestore.kafka.connect.errors;
 
-import com.alicloud.openservices.tablestore.DefaultTableStoreWriter;
-import com.alicloud.openservices.tablestore.SyncClient;
-import com.alicloud.openservices.tablestore.TableStoreCallback;
-import com.alicloud.openservices.tablestore.TableStoreException;
-import com.alicloud.openservices.tablestore.core.auth.DefaultCredentials;
-import com.alicloud.openservices.tablestore.core.auth.ServiceCredentials;
+import com.alicloud.openservices.tablestore.*;
+import com.alicloud.openservices.tablestore.core.ResourceManager;
+import com.alicloud.openservices.tablestore.core.auth.*;
 import com.alicloud.openservices.tablestore.model.*;
 import com.alicloud.openservices.tablestore.writer.RowWriteResult;
 import com.alicloud.openservices.tablestore.writer.WriterConfig;
@@ -13,6 +10,10 @@ import com.alicloud.openservices.tablestore.writer.enums.BatchRequestType;
 import com.alicloud.openservices.tablestore.writer.enums.DispatchMode;
 import com.alicloud.openservices.tablestore.writer.enums.WriteMode;
 import com.aliyun.tablestore.kafka.connect.TableStoreSinkConfig;
+import com.aliyun.tablestore.kafka.connect.enums.AuthMode;
+import com.aliyun.tablestore.kafka.connect.model.StsUserBo;
+import com.aliyun.tablestore.kafka.connect.service.StsService;
+import com.aliyun.tablestore.kafka.connect.utils.ClientUtil;
 import com.aliyun.tablestore.kafka.connect.utils.ParamChecker;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.sink.SinkRecord;
@@ -22,6 +23,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 
 /**
  * TableStore错误报告器：需要指定表名
@@ -33,9 +35,6 @@ public class TableStoreReporter extends GenericErrorReporter {
     private final TableStoreSinkConfig config;
 
     private String endpoint;
-    private String accessKeyId;
-    private String accessKeySecret;
-    private ServiceCredentials credentials;
     private String instanceName;
 
     private String tableName;
@@ -43,18 +42,39 @@ public class TableStoreReporter extends GenericErrorReporter {
     private boolean autoCreate;
     private DefaultTableStoreWriter writer;
 
-    private long clientTimeOutMs = 10 * 60 * 1000L;
+    private String regionId;
+    private String accountId;
+    private String stsAccessId;
+    private String stsAccessKey;
+    private String roleName;
+    private String stsEndpoint;
+
+    private long clientTimeOutMs;
     private long clientCreateLastTime;
+
+    private AuthMode authMode;
+
+    private final String accessKeyId;
+    private final String accessKeySecret;
+    private CredentialsProvider credentialsProvider = null;
+    private ExecutorService executorService = null;
+    private AsyncClient ots = null;
 
     public TableStoreReporter(TableStoreSinkConfig config) {
         super();
         LOGGER.info("Initialize TableStore Error Reporter");
         this.config = config;
 
+        authMode = AuthMode.getType(config.getString(TableStoreSinkConfig.TABLESTORE_AUTH_MODE));
+        if (authMode == null) {
+            LOGGER.error("auth mode is empty, please check");
+            throw new RuntimeException("auth mode is empty, please check");
+        }
+
         endpoint = config.getString(TableStoreSinkConfig.OTS_ENDPOINT);
         accessKeyId = config.getString(TableStoreSinkConfig.OTS_ACCESS_KEY_ID);
         accessKeySecret = config.getPassword(TableStoreSinkConfig.OTS_ACCESS_KEY_SECRET).value();
-        credentials = new DefaultCredentials(accessKeyId, accessKeySecret);
+
         instanceName = config.getString(TableStoreSinkConfig.OTS_INSTANCE_NAME);
 
         tableName = config.getString(TableStoreSinkConfig.RUNTIME_ERROR_TABLE_NAME);
@@ -69,9 +89,32 @@ public class TableStoreReporter extends GenericErrorReporter {
 
         autoCreate = config.getBoolean(TableStoreSinkConfig.AUTO_CREATE);
 
+        regionId = config.getString(TableStoreSinkConfig.REGION);
+        accountId = config.getString(TableStoreSinkConfig.ACCOUNT_ID);
+        Map<String, String> env = System.getenv();
+        stsAccessId = env.getOrDefault(TableStoreSinkConfig.STS_ACCESS_ID, "");
+        stsAccessKey = env.getOrDefault(TableStoreSinkConfig.STS_ACCESS_KEY, "");
+        roleName = config.getString(TableStoreSinkConfig.ROLE_NAME);
+        stsEndpoint = config.getString(TableStoreSinkConfig.STS_ENDPOINT);
+        clientTimeOutMs = config.getLong(TableStoreSinkConfig.CLIENT_TIME_OUT_MS);
+
+        StsUserBo stsUserBo = createFakeStsUserBo(accessKeyId, accessKeySecret);
+        if (AuthMode.STS == authMode) {
+            stsUserBo = StsService.getAssumeRole(accountId, regionId, stsEndpoint, stsAccessId, stsAccessKey, roleName);
+        }
         clientCreateLastTime = System.currentTimeMillis();
-        validateOrCreateIfNecessary(tableName);
-        initWriter();
+
+        validateOrCreateIfNecessary(tableName, stsUserBo);
+        initWriter(stsUserBo);
+    }
+
+
+
+    private StsUserBo createFakeStsUserBo(String ak, String sk) {
+        StsUserBo bo = new StsUserBo();
+        bo.setAk(ak);
+        bo.setSk(sk);
+        return bo;
     }
 
 
@@ -80,8 +123,8 @@ public class TableStoreReporter extends GenericErrorReporter {
      *
      * @param tableName
      */
-    private void validateOrCreateIfNecessary(String tableName) {
-        SyncClient ots = new SyncClient(endpoint, accessKeyId, accessKeySecret, instanceName);
+    private void validateOrCreateIfNecessary(String tableName, StsUserBo stsUserBo) {
+        SyncClient ots = new SyncClient(endpoint, stsUserBo.getAk(), stsUserBo.getSk(), instanceName, stsUserBo.getToken());
 
         DescribeTableRequest request = new DescribeTableRequest();
         request.setTableName(tableName);
@@ -122,7 +165,7 @@ public class TableStoreReporter extends GenericErrorReporter {
         CreateTableRequest request = new CreateTableRequest(
                 tableMeta, tableOptions, new ReservedThroughput(new CapacityUnit(0, 0)));
 
-        CreateTableResponse res = ots.createTable(request);
+        ots.createTable(request);
 
         return tableMeta;
     }
@@ -130,7 +173,7 @@ public class TableStoreReporter extends GenericErrorReporter {
     /**
      * 初始化 writer
      */
-    private void initWriter() {
+    private void initWriter(StsUserBo stsUserBo) {
         WriterConfig writerConfig = new WriterConfig();
         writerConfig.setConcurrency(config.getInt(TableStoreSinkConfig.MAX_CONCURRENCY));//一个TableStoreWriter的最大请求并发数
         writerConfig.setBufferSize(config.getInt(TableStoreSinkConfig.BUFFER_SIZE));//一个TableStoreWriter在内存中缓冲队列的大小
@@ -151,10 +194,15 @@ public class TableStoreReporter extends GenericErrorReporter {
                 LOGGER.error("Could not add message to runtime error table. Table Name=" + tableName, ex);
             }
         };
+        ServiceCredentials credentials = new DefaultCredentials(stsUserBo.getAk(), stsUserBo.getSk(), stsUserBo.getToken());
 
-        writer = new DefaultTableStoreWriter(
-                endpoint, credentials, instanceName, tableName, writerConfig, callback);
+        ClientConfiguration cc = ClientUtil.getClientConfiguration(writerConfig);
 
+        credentialsProvider = CredentialsProviderFactory.newDefaultCredentialProvider(credentials.getAccessKeyId(), credentials.getAccessKeySecret(), credentials.getSecurityToken());
+        ots = new AsyncClient(endpoint, credentialsProvider, instanceName, cc, new ResourceManager(cc, null));
+
+        executorService = ClientUtil.createThreadPool(writerConfig);
+        writer = new DefaultTableStoreWriter(ots, tableName, writerConfig, callback, executorService);
     }
 
     @Override
@@ -176,9 +224,15 @@ public class TableStoreReporter extends GenericErrorReporter {
     }
 
     private void rebuildWriter() {
-        // do nothing
-        clientCreateLastTime = System.currentTimeMillis();
+        if (authMode == AuthMode.STS) {
+            writer.flush();
+            ClientUtil.refreshCredential(accountId, regionId, stsEndpoint, stsAccessId, stsAccessKey, roleName, credentialsProvider);
+            clientCreateLastTime = System.currentTimeMillis();
+        } else {
+            clientCreateLastTime = System.currentTimeMillis();
+        }
     }
+
 
     /**
      * 转换为 rowChange
@@ -224,6 +278,9 @@ public class TableStoreReporter extends GenericErrorReporter {
     @Override
     public void close() {
         LOGGER.info("Shutdown TableStore Error Reporter");
-        this.writer.close();
+        writer.close();
+        executorService.shutdown();
+        ots.shutdown();
     }
+
 }

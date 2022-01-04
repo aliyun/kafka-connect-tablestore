@@ -2,11 +2,15 @@ package com.aliyun.tablestore.kafka.connect.parsers;
 
 import com.alicloud.openservices.tablestore.core.utils.Bytes;
 import com.alicloud.openservices.tablestore.model.*;
+import com.aliyun.tablestore.kafka.connect.TableStoreSinkConfig;
 import com.aliyun.tablestore.kafka.connect.enums.PrimaryKeyMode;
+import com.aliyun.tablestore.kafka.connect.enums.SearchTimeMode;
+import com.aliyun.tablestore.kafka.connect.utils.ColumnCoverterUtil;
 import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.data.Values;
+import org.apache.kafka.connect.sink.SinkRecord;
 
 import java.util.*;
 
@@ -157,8 +161,10 @@ public class DefaultEventParser implements EventParser {
             Object value,
             PrimaryKey primaryKey,
             List<DefinedColumnSchema> whitelistColumnSchemaList,
-            PrimaryKeyMode primaryKeyMode
-
+            PrimaryKeyMode primaryKeyMode,
+            SinkRecord sinkRecord,
+            TableStoreSinkConfig config,
+            String tableName
     ) throws EventParsingException {
 
         LinkedHashMap<String, ColumnValue> result = new LinkedHashMap<>();
@@ -189,8 +195,19 @@ public class DefaultEventParser implements EventParser {
             }
         }
 
+        if (primaryKeyMode == PrimaryKeyMode.SEARCH) {
+            if (config.getSearchTimeMode(tableName) == SearchTimeMode.KAFKA) {
+                if (sinkRecord.timestamp() == null) {
+                    throw new EventParsingException(String.format("timestamp in sink record should not be null, record: %s", sinkRecord));
+                }
+                result.put(TableStoreSinkConfig.SEARCH_FIELD_TIMESTAMP, ColumnValue.fromLong(sinkRecord.timestamp()));
+            } else {
+                result.put(TableStoreSinkConfig.SEARCH_FIELD_TIMESTAMP, ColumnValue.fromLong(System.currentTimeMillis()));
+            }
+        }
+
         if (result.isEmpty()) {
-            throw new EventParsingException(String.format("Primary key %s parse fail", primaryKey.toString()));
+            throw new EventParsingException(String.format("sink record parse fail, record: %s", sinkRecord));
         }
 
         return result;
@@ -205,7 +222,7 @@ public class DefaultEventParser implements EventParser {
             List<DefinedColumnSchema> whitelistColumnSchemaList
 
     ) throws EventParsingException {
-        return parseForColumns(null, null, schema, value, primaryKey, whitelistColumnSchemaList, null);
+        return parseForColumns(null, null, schema, value, primaryKey, whitelistColumnSchemaList, null, null, null, null);
     }
 
     /**
@@ -268,7 +285,8 @@ public class DefaultEventParser implements EventParser {
 
                 Object originalValue = mapValue.get(colName);
 
-                columnValueMap.put(colName, ColumnValue.fromString(originalValue.toString()));
+                ColumnValue colValue = ColumnCoverterUtil.getColumnValue(originalValue, null, whitelistColumnSchema.getType());
+                columnValueMap.put(colName, colValue);
             }
 
         }
@@ -295,8 +313,8 @@ public class DefaultEventParser implements EventParser {
                 if (primaryKey.contains(field.name())) {
                     continue;
                 }
-                DefinedColumnType colType = convertToColumnType(field.schema().type());
-                columnValueMap.put(field.name(), getColumnValue(structValue.get(field), field.schema(), colType));
+                DefinedColumnType colType = ColumnCoverterUtil.convertToColumnType(field.schema().type());
+                columnValueMap.put(field.name(), ColumnCoverterUtil.getColumnValue(structValue.get(field), field.schema(), colType));
             }
         } else {
             //有过滤列
@@ -310,7 +328,7 @@ public class DefaultEventParser implements EventParser {
                     continue;
                 }
 
-                DefinedColumnType colType = convertToColumnType(field.schema().type());
+                DefinedColumnType colType = ColumnCoverterUtil.convertToColumnType(field.schema().type());
 
                 //如果转换后的类型与用户配置不同，报错
                 if (colType != whitelistColumnSchema.getType()) {
@@ -319,7 +337,7 @@ public class DefaultEventParser implements EventParser {
                                     "defined in config, but it's " + colType + " in SinkRecord."
                     );
                 }
-                ColumnValue colValue = getColumnValue(structValue.get(field), field.schema(), colType);
+                ColumnValue colValue = ColumnCoverterUtil.getColumnValue(structValue.get(field), field.schema(), colType);
                 columnValueMap.put(colName, colValue);
             }
         }
@@ -386,34 +404,6 @@ public class DefaultEventParser implements EventParser {
     }
 
     /**
-     * 属性列数据类型映射
-     *
-     * @param type
-     * @return DefinedColumnType
-     */
-    private DefinedColumnType convertToColumnType(Schema.Type type) {
-        switch (type) {
-            case STRING:
-                return DefinedColumnType.STRING;
-            case INT8:
-            case INT16:
-            case INT32:
-            case INT64:
-                return DefinedColumnType.INTEGER;
-            case BYTES:
-                return DefinedColumnType.BINARY;
-            case FLOAT32:
-            case FLOAT64:
-                return DefinedColumnType.DOUBLE;
-            case BOOLEAN:
-                return DefinedColumnType.BOOLEAN;
-            default:
-                throw new EventParsingException(String.format("Unexpected type for Column: %s", type));
-        }
-
-    }
-
-    /**
      * 转换成主键值
      *
      * @param value
@@ -433,35 +423,6 @@ public class DefaultEventParser implements EventParser {
                 return PrimaryKeyValue.fromBinary((byte[]) (value));
             default:
                 throw new EventParsingException(String.format("Failed to convert %s to PrimaryKeyValue", value.toString()));
-        }
-
-    }
-
-
-    /**
-     * 转换成属性列值
-     *
-     * @param value
-     * @param colType
-     * @return ColumnValue
-     */
-    private ColumnValue getColumnValue(Object value, Schema schema, DefinedColumnType colType) {
-        if (value == null) {
-            return null;
-        }
-        switch (colType) {
-            case STRING:
-                return ColumnValue.fromString(Values.convertToString(schema, value));
-            case INTEGER:
-                return ColumnValue.fromLong(Values.convertToLong(schema, value));
-            case BINARY:
-                return ColumnValue.fromBinary((byte[]) (value));
-            case DOUBLE:
-                return ColumnValue.fromDouble(Values.convertToDouble(schema, value));
-            case BOOLEAN:
-                return ColumnValue.fromBoolean(Values.convertToBoolean(schema, value));
-            default:
-                throw new EventParsingException(String.format("Failed to convert %s to ColumnValue", value.toString()));
         }
 
     }
