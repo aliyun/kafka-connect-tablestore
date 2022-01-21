@@ -16,6 +16,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 
 public class TableStoreSinkTask extends SinkTask {
@@ -24,6 +26,11 @@ public class TableStoreSinkTask extends SinkTask {
     private TableStoreSinkConfig config;
     private TableStoreSinkWriterInterface tableStoreSinkWriter;
     private ErrorReporter errorReporter;
+
+    private static Map<String, TableStoreSinkWriterInterface> WRITERINTERFACE_MAP = new ConcurrentHashMap<>();
+    private static Map<String, ErrorReporter> ERRORREPORT_MAP = new ConcurrentHashMap<>();
+    private static Map<String, AtomicInteger> COUNT_MAP = new ConcurrentHashMap<>();
+
 
     public TableStoreSinkTask() {
     }
@@ -47,12 +54,26 @@ public class TableStoreSinkTask extends SinkTask {
     public void start(Map<String, String> properties) {
         LOGGER.info("Thread(" + Thread.currentThread().getId() + ") Enter START");
         config = new TableStoreSinkConfig(properties);
-        if (RunTimeErrorMode.KAFKA.equals(config.getRunTimeErrorMode())) {
-            errorReporter = new KafkaReporter(config);
-        } else if (RunTimeErrorMode.TABLESTORE.equals(config.getRunTimeErrorMode())){
-            errorReporter = new TableStoreReporter(config);
-        }
+        String name = config.getName();
+        synchronized (TableStoreSinkTask.class) {
+            AtomicInteger count = COUNT_MAP.computeIfAbsent(name, e -> new AtomicInteger(0));
+            count.incrementAndGet();
 
+            LOGGER.info(String.format("init errorReport. connectorName: %s", name));
+
+            errorReporter = ERRORREPORT_MAP.computeIfAbsent(name, e -> createErrorReport(config));
+        }
+    }
+
+
+    private ErrorReporter createErrorReport(TableStoreSinkConfig config) {
+        if (RunTimeErrorMode.KAFKA.equals(config.getRunTimeErrorMode())) {
+            return new KafkaReporter(config);
+        } else if (RunTimeErrorMode.TABLESTORE.equals(config.getRunTimeErrorMode())) {
+            return new TableStoreReporter(config);
+        } else {
+            return null;
+        }
     }
 
     /**
@@ -63,15 +84,17 @@ public class TableStoreSinkTask extends SinkTask {
     @Override
     public void open(Collection<TopicPartition> partitions) {
         LOGGER.info("Thread(" + Thread.currentThread().getId() + ") Enter OPEN");
-        tableStoreSinkWriter = getSinkWriterByConfigMode(config);
-
         Set<String> topics = new HashSet<>();
         for (TopicPartition partition : partitions) {
             LOGGER.info("Thread(" + Thread.currentThread().getId() + ") OPEN (topic: " +
                     partition.topic() + ", partition: " + partition.partition() + ")");
             topics.add(partition.topic());
         }
-        tableStoreSinkWriter.initWriter(topics);
+        synchronized (TableStoreSinkTask.class) {
+            LOGGER.info(String.format("init tableStoreSinkWriter. connectorName:%s", config.getName()));
+            tableStoreSinkWriter = WRITERINTERFACE_MAP.computeIfAbsent(config.getName(), e -> getSinkWriterByConfigMode(config));
+            tableStoreSinkWriter.initWriter(topics);
+        }
     }
 
     /**
@@ -112,7 +135,6 @@ public class TableStoreSinkTask extends SinkTask {
             LOGGER.info("Thread(" + Thread.currentThread().getId() + ") CLOSE (topic: " +
                     partition.topic() + ", partition: " + partition.partition() + ")");
         }
-        tableStoreSinkWriter.closeWriters();
     }
 
 
@@ -121,12 +143,34 @@ public class TableStoreSinkTask extends SinkTask {
      */
     @Override
     public void stop() {
-        LOGGER.info("Thread(" + Thread.currentThread().getId() + ") Enter Stop");
 
-        tableStoreSinkWriter.close();
-        if(errorReporter!=null){
-            errorReporter.close();
+        LOGGER.info("Thread(" + Thread.currentThread().getId() + ") Enter Stop");
+        String connectorName = config.getName();
+        AtomicInteger atomic = COUNT_MAP.get(connectorName);
+        int left = 0;
+        synchronized (TableStoreSinkTask.class) {
+            if (atomic != null) {
+                left = atomic.decrementAndGet();
+            }
+            LOGGER.info(String.format("num of left task is %s, connector name : %s", left, connectorName));
+
+            if (left <= 0) {
+                LOGGER.info(String.format("no task left, release resource. connectorName : %s", connectorName));
+                tableStoreSinkWriter.closeWriters();
+                tableStoreSinkWriter.close();
+                if (errorReporter != null) {
+                    errorReporter.close();
+                }
+
+                WRITERINTERFACE_MAP.remove(connectorName);
+                ERRORREPORT_MAP.remove(connectorName);
+                COUNT_MAP.remove(connectorName);
+            }
         }
+
+        errorReporter = null;
+        tableStoreSinkWriter = null;
+        config = null;
     }
 
 
