@@ -160,7 +160,9 @@ public class TableStoreSinkWriter implements TableStoreSinkWriterInterface {
     @Override
     public void initWriter(Set<String> topics) {
 
-        ots = InitClient();
+        if (ots == null) {
+            ots = InitClient();
+        }
         for (String topic : topics) {
 
             String tableName = config.getTableNameByTopic(topic);
@@ -383,19 +385,24 @@ public class TableStoreSinkWriter implements TableStoreSinkWriterInterface {
 
     @Override
     public void rebuildClient() {
-        if (authMode == AuthMode.AKSK) {
-            // 无需rebuilt
-            clientCreateLastTime = System.currentTimeMillis();
+        try {
+            if (authMode == AuthMode.AKSK) {
+                // 无需rebuilt
+                clientCreateLastTime = System.currentTimeMillis();
+                return;
+            } else if (authMode == AuthMode.STS) {
+                LOGGER.info("start rebuild Client.");
+                flushWriters();
+                ClientUtil.refreshCredential(accountId, regionId, stsEndpoint, stsAccessId, stsAccessKey, roleName, credentialsProvider);
+                clientCreateLastTime = System.currentTimeMillis();
+                LOGGER.info("finish rebuild Client.");
+                return;
+            }
             return;
-        } else if (authMode == AuthMode.STS) {
-            LOGGER.info("start rebuild Client.");
-            flushWriters();
-            ClientUtil.refreshCredential(accountId, regionId, stsEndpoint, stsAccessId, stsAccessKey, roleName, credentialsProvider);
-            clientCreateLastTime = System.currentTimeMillis();
-            LOGGER.info("finish rebuild Client.");
+        } catch (Exception e) {
+            LOGGER.error("Error while rebuild client.", e);
             return;
         }
-        return;
     }
 
 }

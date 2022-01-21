@@ -40,7 +40,7 @@ public class TableStoreSinkConfig extends AbstractConfig {
     private static final String STS_GROUP = "Sts";
 
 
-
+    public static final String CONNECTOR_NAME = "name";
     /**
      * Kafka 主题列表
      */
@@ -242,6 +242,16 @@ public class TableStoreSinkConfig extends AbstractConfig {
                         1,
                         ConfigDef.Width.LONG,
                         "Topic List"
+                )
+                .define(CONNECTOR_NAME,
+                        ConfigDef.Type.STRING,
+                        ConfigDef.NO_DEFAULT_VALUE,
+                        ConfigDef.Importance.HIGH,
+                        "Connector Name.",
+                        KAFKA_GROUP,
+                        2,
+                        ConfigDef.Width.LONG,
+                        "Connector Name"
                 )
                 .define(TABLESTORE_MODE,
                         ConfigDef.Type.STRING,
@@ -733,6 +743,9 @@ public class TableStoreSinkConfig extends AbstractConfig {
         return this.tableNameByTopic.keySet();
     }
 
+    public String getName() {
+        return getString(CONNECTOR_NAME);
+    }
 
     public boolean toLowerCaseTimeseries() {
         return timeseriesToLowerCase;
